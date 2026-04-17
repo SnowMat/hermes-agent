@@ -3843,6 +3843,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                delivery_metadata=getattr(event, "metadata", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -5444,7 +5445,9 @@ class GatewayRunner:
                     "audio_path": actual_path,
                     "reply_to": event.message_id,
                 }
-                if event.source.thread_id:
+                if event.metadata is not None:
+                    send_kwargs["metadata"] = event.metadata
+                elif event.source.thread_id:
                     send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
                 await adapter.send_voice(**send_kwargs)
         except Exception as e:
@@ -5475,7 +5478,11 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta = (
+                event.metadata
+                if event.metadata is not None
+                else ({"thread_id": event.source.thread_id} if event.source.thread_id else None)
+            )
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -7730,6 +7737,7 @@ class GatewayRunner:
         session_id: str,
         session_key: str = None,
         event_message_id: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -7820,8 +7828,10 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
+        if delivery_metadata is not None:
+            _thread_metadata = delivery_metadata
+        elif source.thread_id:
+            _thread_metadata = {"thread_id": source.thread_id}
         else:
             _thread_metadata = None
 
@@ -7969,6 +7979,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7992,6 +8003,7 @@ class GatewayRunner:
                 session_id=session_id,
                 session_key=session_key,
                 event_message_id=event_message_id,
+                delivery_metadata=delivery_metadata,
             )
 
         from run_agent import AIAgent
@@ -8117,15 +8129,23 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
+        # - Slack may use explicit delivery_metadata to suppress synthetic
+        #   per-message thread anchors for top-level channel replies
         # - Slack DM threading needs event_message_id fallback (reply thread)
         # - Telegram uses message_thread_id only for forum topics; passing a
         #   normal DM/group message id as thread_id causes send failures
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
+        _progress_thread_id = None
+        if delivery_metadata is not None:
+            _progress_metadata = delivery_metadata
+            if isinstance(delivery_metadata, dict):
+                _progress_thread_id = delivery_metadata.get("thread_id")
+        elif source.platform == Platform.SLACK:
             _progress_thread_id = source.thread_id or event_message_id
+            _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+            _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():
             if not progress_queue:
@@ -8286,7 +8306,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = _progress_metadata
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -8410,7 +8430,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_progress_metadata,
                         )
                         if _want_stream_deltas:
                             _stream_delta_cb = _stream_consumer.on_delta
@@ -9280,6 +9300,7 @@ class GatewayRunner:
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    delivery_metadata=getattr(pending_event, "metadata", None) if pending_event is not None else delivery_metadata,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

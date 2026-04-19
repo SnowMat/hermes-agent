@@ -584,6 +584,11 @@ class TestReactionRouting:
         assert msg_event.source.chat_id == "D123"
         assert msg_event.source.user_id == "U_USER"
         assert msg_event.source.thread_id == "2000000000.000001"
+        adapter._app.client.reactions_add.assert_awaited_once_with(
+            channel="D123",
+            timestamp="2000000000.000010",
+            name="muscle",
+        )
 
     @pytest.mark.asyncio
     async def test_ignores_reaction_on_non_bot_message(self, adapter):
@@ -607,6 +612,33 @@ class TestReactionRouting:
         )
 
         adapter.handle_message.assert_not_called()
+        adapter._app.client.reactions_add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_binary_reaction_removal_does_not_add_confirmation_emoji(self, adapter):
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "ts": "2000000000.000010",
+                "user": "U_BOT",
+                "thread_ts": "2000000000.000001",
+                "channel_type": "im",
+            }]
+        })
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="Matthias")):
+            await adapter._handle_slack_reaction_event(
+                "reaction_removed",
+                {
+                    "type": "reaction_removed",
+                    "user": "U_USER",
+                    "reaction": "thumbsup",
+                    "event_ts": "2000000001.000002",
+                    "item": {"type": "message", "channel": "D123", "ts": "2000000000.000010"},
+                },
+            )
+
+        adapter.handle_message.assert_called_once()
+        adapter._app.client.reactions_add.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -1067,6 +1067,8 @@ class SlackAdapter(BasePlatformAdapter):
             target_ts,
         )
         await self.handle_message(synthetic_event)
+        if action == "added" and choice_hint:
+            await self._add_reaction(channel_id, target_ts, "muscle")
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""

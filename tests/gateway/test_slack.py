@@ -86,6 +86,7 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    monkeypatch.delenv("SLACK_ALLOW_BOTS", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,8 @@ class TestAppMentionHandler:
         assert "app_mention" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
+        assert "reaction_added" in registered_events
+        assert "reaction_removed" in registered_events
         assert "/hermes" in registered_commands
 
 
@@ -545,6 +548,64 @@ class TestMessageRouting:
             "subtype": "message_changed",
         }
         await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+
+class TestReactionRouting:
+    @pytest.mark.asyncio
+    async def test_routes_thumbs_up_on_bot_message_as_synthetic_event(self, adapter):
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "ts": "2000000000.000010",
+                "user": "U_BOT",
+                "thread_ts": "2000000000.000001",
+                "channel_type": "im",
+            }]
+        })
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="Matthias")):
+            await adapter._handle_slack_reaction_event(
+                "reaction_added",
+                {
+                    "type": "reaction_added",
+                    "user": "U_USER",
+                    "reaction": "thumbsup",
+                    "event_ts": "2000000001.000001",
+                    "item": {"type": "message", "channel": "D123", "ts": "2000000000.000010"},
+                },
+            )
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert "[Slack reaction event]" in msg_event.text
+        assert "action=added" in msg_event.text
+        assert "emoji=thumbsup" in msg_event.text
+        assert "choice=yes" in msg_event.text
+        assert msg_event.source.chat_id == "D123"
+        assert msg_event.source.user_id == "U_USER"
+        assert msg_event.source.thread_id == "2000000000.000001"
+
+    @pytest.mark.asyncio
+    async def test_ignores_reaction_on_non_bot_message(self, adapter):
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "ts": "2000000000.000010",
+                "user": "U_OTHER",
+                "channel_type": "im",
+            }]
+        })
+
+        await adapter._handle_slack_reaction_event(
+            "reaction_added",
+            {
+                "type": "reaction_added",
+                "user": "U_USER",
+                "reaction": "thumbsup",
+                "event_ts": "2000000001.000001",
+                "item": {"type": "message", "channel": "D123", "ts": "2000000000.000010"},
+            },
+        )
+
         adapter.handle_message.assert_not_called()
 
 

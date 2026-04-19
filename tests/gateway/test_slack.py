@@ -552,11 +552,16 @@ class TestMessageRouting:
 
 
 class TestReactionRouting:
+    def test_append_reaction_update_replaces_prior_note(self, adapter):
+        original = 'Question text\n\n[update: you reacted "yes"]'
+        assert adapter._append_reaction_update(original, "no") == 'Question text\n\n[update: you reacted "no"]'
+
     @pytest.mark.asyncio
     async def test_routes_thumbs_up_on_bot_message_as_synthetic_event(self, adapter):
         adapter._app.client.conversations_history = AsyncMock(return_value={
             "messages": [{
                 "ts": "2000000000.000010",
+                "text": "original question",
                 "user": "U_BOT",
                 "thread_ts": "2000000000.000001",
                 "channel_type": "im",
@@ -584,10 +589,10 @@ class TestReactionRouting:
         assert msg_event.source.chat_id == "D123"
         assert msg_event.source.user_id == "U_USER"
         assert msg_event.source.thread_id == "2000000000.000001"
-        adapter._app.client.reactions_add.assert_awaited_once_with(
+        adapter._app.client.chat_update.assert_awaited_once_with(
             channel="D123",
-            timestamp="2000000000.000010",
-            name="muscle",
+            ts="2000000000.000010",
+            text='original question\n\n[update: you reacted "yes"]',
         )
 
     @pytest.mark.asyncio
@@ -612,13 +617,14 @@ class TestReactionRouting:
         )
 
         adapter.handle_message.assert_not_called()
-        adapter._app.client.reactions_add.assert_not_awaited()
+        adapter._app.client.chat_update.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_binary_reaction_removal_does_not_add_confirmation_emoji(self, adapter):
+    async def test_binary_reaction_removal_does_not_edit_confirmation_note(self, adapter):
         adapter._app.client.conversations_history = AsyncMock(return_value={
             "messages": [{
                 "ts": "2000000000.000010",
+                "text": "original question",
                 "user": "U_BOT",
                 "thread_ts": "2000000000.000001",
                 "channel_type": "im",
@@ -638,7 +644,7 @@ class TestReactionRouting:
             )
 
         adapter.handle_message.assert_called_once()
-        adapter._app.client.reactions_add.assert_not_awaited()
+        adapter._app.client.chat_update.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -995,6 +995,14 @@ class SlackAdapter(BasePlatformAdapter):
         messages = result.get("messages", []) if isinstance(result, dict) else []
         return messages[0] if messages else {}
 
+    @staticmethod
+    def _append_reaction_update(original_text: str, choice_hint: str) -> str:
+        """Append or replace a durable reaction update note on a bot-authored message."""
+        base = (original_text or "").rstrip()
+        base = re.sub(r'\n?\[update: you reacted ".*?"\]\s*$', "", base, flags=re.DOTALL).rstrip()
+        update_line = f'[update: you reacted "{choice_hint}"]'
+        return f"{base}\n\n{update_line}" if base else update_line
+
     async def _handle_slack_reaction_event(self, event_type: str, event: dict) -> None:
         """Route user reactions on Hermes Slack messages as synthetic text events."""
         if not self._app:
@@ -1068,7 +1076,8 @@ class SlackAdapter(BasePlatformAdapter):
         )
         await self.handle_message(synthetic_event)
         if action == "added" and choice_hint:
-            await self._add_reaction(channel_id, target_ts, "muscle")
+            updated_text = self._append_reaction_update(target_message.get("text", ""), choice_hint)
+            await self.edit_message(channel_id, target_ts, updated_text)
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""

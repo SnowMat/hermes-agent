@@ -16,6 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple
+from urllib.parse import unquote
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -198,6 +199,14 @@ class SlackAdapter(BasePlatformAdapter):
             @self._app.event("assistant_thread_context_changed")
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
+
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._handle_slack_reaction_event("reaction_added", event)
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                await self._handle_slack_reaction_event("reaction_removed", event)
 
             # Register slash command handler
             @self._app.command("/hermes")
@@ -932,6 +941,118 @@ class SlackAdapter(BasePlatformAdapter):
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+
+    @staticmethod
+    def _reaction_choice_hint(emoji_name: str) -> str:
+        """Map common Slack reaction names to yes/no hints when possible."""
+        normalized = (emoji_name or "").strip().lower()
+        if normalized in {"+1", "thumbsup", "white_check_mark", "heavy_check_mark", "yes"}:
+            return "yes"
+        if normalized in {"-1", "thumbsdown", "x", "heavy_multiplication_x", "no"}:
+            return "no"
+        return ""
+
+    @staticmethod
+    def _format_reaction_name(emoji_name: str) -> str:
+        """Normalize a Slack reaction name into a readable label."""
+        raw = unquote((emoji_name or "").strip()).strip(":")
+        return raw.replace("::", ":") or "unknown"
+
+    async def _fetch_message_by_ts(self, channel_id: str, ts: str) -> dict:
+        """Fetch a single Slack message snapshot by timestamp."""
+        if not self._app or not channel_id or not ts:
+            return {}
+        try:
+            result = await self._get_client(channel_id).conversations_history(
+                channel=channel_id,
+                latest=ts,
+                oldest=ts,
+                inclusive=True,
+                limit=1,
+            )
+        except Exception:
+            logger.debug(
+                "[Slack] Failed to fetch message %s in %s for reaction routing",
+                ts,
+                channel_id,
+                exc_info=True,
+            )
+            return {}
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        return messages[0] if messages else {}
+
+    async def _handle_slack_reaction_event(self, event_type: str, event: dict) -> None:
+        """Route user reactions on Hermes Slack messages as synthetic text events."""
+        if not self._app:
+            return
+
+        item = event.get("item") or {}
+        channel_id = item.get("channel", "")
+        target_ts = item.get("ts", "")
+        user_id = event.get("user", "")
+        if not channel_id or not target_ts or not user_id:
+            return
+
+        team_id = event.get("team") or event.get("team_id") or self._channel_team.get(channel_id, "")
+        if team_id:
+            self._channel_team[channel_id] = team_id
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        if bot_uid and user_id == bot_uid:
+            return
+
+        target_message = await self._fetch_message_by_ts(channel_id, target_ts)
+        if not target_message:
+            return
+
+        sender_user = str(target_message.get("user", "") or "")
+        sender_bot_id = str(target_message.get("bot_id", "") or "")
+        if bot_uid and sender_user != bot_uid and not sender_bot_id:
+            return
+        if not bot_uid and not sender_bot_id:
+            return
+
+        reaction_name = self._format_reaction_name(event.get("reaction", ""))
+        action = "added" if event_type == "reaction_added" else "removed"
+        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+
+        channel_type = target_message.get("channel_type", "")
+        if not channel_type and channel_id.startswith("D"):
+            channel_type = "im"
+        is_dm = channel_type in ("im", "mpim")
+        thread_ts = target_message.get("thread_ts") or (None if is_dm else target_ts)
+
+        text_lines = [
+            "[Slack reaction event]",
+            f"action={action}",
+            f"emoji={reaction_name}",
+            f"target_message_ts={target_ts}",
+        ]
+        choice_hint = self._reaction_choice_hint(reaction_name)
+        if choice_hint:
+            text_lines.append(f"choice={choice_hint}")
+        synthetic_event = MessageEvent(
+            text="\n".join(text_lines),
+            message_type=MessageType.TEXT,
+            source=self.build_source(
+                chat_id=channel_id,
+                chat_name=channel_id,
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=thread_ts,
+            ),
+            raw_message=event,
+            message_id=f"reaction:{event.get('event_ts', target_ts)}:{reaction_name}:{action}",
+            reply_to_message_id=thread_ts if thread_ts and thread_ts != target_ts else None,
+        )
+        logger.info(
+            "[Slack] Routing reaction %s:%s from %s on bot message %s as synthetic event",
+            action,
+            reaction_name,
+            user_id,
+            target_ts,
+        )
+        await self.handle_message(synthetic_event)
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""

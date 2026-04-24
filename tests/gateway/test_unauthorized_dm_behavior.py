@@ -252,6 +252,29 @@ async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_email_dm_is_always_silent_even_when_default_is_pair(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+    runner.pairing_store.generate_code.return_value = "LEAKCODE"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.EMAIL,
+            "partner@example.com",
+            "partner@example.com",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store._is_rate_limited.assert_not_called()
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rate_limited_user_gets_no_response(monkeypatch):
     """When a user is already rate-limited, pairing messages are silently ignored."""
     _clear_auth_env(monkeypatch)

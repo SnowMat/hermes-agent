@@ -238,6 +238,9 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._allow_outbound = str(
+            extra.get("allow_outbound", os.getenv("EMAIL_ALLOW_OUTBOUND", "false"))
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -470,6 +473,9 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        if not self._allow_outbound:
+            logger.warning("[Email] Outbound send blocked by EMAIL_ALLOW_OUTBOUND safety gate: %s", chat_id)
+            return SendResult(success=False, error="Email outbound disabled by safety gate")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -548,6 +554,9 @@ class EmailAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        if not self._allow_outbound:
+            logger.warning("[Email] Outbound document send blocked by EMAIL_ALLOW_OUTBOUND safety gate: %s", chat_id)
+            return SendResult(success=False, error="Email outbound disabled by safety gate")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(

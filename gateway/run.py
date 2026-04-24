@@ -3111,14 +3111,25 @@ class GatewayRunner:
         """Return how unauthorized DMs should be handled for a platform.
 
         Resolution order:
-        1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
-        2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS`` or ``GATEWAY_ALLOWED_USERS``) is
+        1. Email is always ``"ignore"`` because mailbox lanes are third-party
+           communication surfaces, not user-facing bot DMs.
+        2. Explicit per-platform ``unauthorized_dm_behavior`` in config — wins for
+           non-email platforms.
+        3. Explicit global ``unauthorized_dm_behavior`` in config — wins when no
+           per-platform override exists for non-email platforms.
+        4. When an allowlist (``PLATFORM_ALLOWED_USERS`` or ``GATEWAY_ALLOWED_USERS``) is
            configured, default to ``"ignore"`` — the allowlist signals that the owner has
            deliberately restricted access; spamming unknown contacts with pairing codes
            is both noisy and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        5. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
+        # Email lanes are third-party communication surfaces, not user-facing
+        # bot DMs. Unknown email senders are normal business contacts and must
+        # never receive Hermes pairing/authorization messages from the mailbox,
+        # even if an operator accidentally leaves the default pairing policy on.
+        if platform == Platform.EMAIL:
+            return "ignore"
+
         config = getattr(self, "config", None)
 
         # Check for an explicit per-platform override first.

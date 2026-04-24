@@ -536,10 +536,23 @@ class TestSendMethods(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
-    def test_send_calls_smtp(self):
-        """send() should use SMTP to deliver email."""
+    def test_send_blocked_by_default_without_explicit_outbound_enable(self):
+        """Email lanes are ingest-only unless outbound is explicitly enabled."""
         import asyncio
         adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(adapter.send("user@test.com", "Hello from Hermes!"))
+
+        self.assertFalse(result.success)
+        self.assertIn("disabled", result.error.lower())
+        mock_smtp.assert_not_called()
+
+    def test_send_calls_smtp(self):
+        """send() should use SMTP to deliver email when outbound is enabled."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._allow_outbound = True
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
@@ -559,6 +572,7 @@ class TestSendMethods(unittest.TestCase):
         """SMTP failure should return SendResult with error."""
         import asyncio
         adapter = self._make_adapter()
+        adapter._allow_outbound = True
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_smtp.side_effect = Exception("Connection refused")
@@ -592,6 +606,7 @@ class TestSendMethods(unittest.TestCase):
         import asyncio
         import tempfile
         adapter = self._make_adapter()
+        adapter._allow_outbound = True
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             f.write(b"Test document content")
